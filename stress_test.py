@@ -15,7 +15,8 @@ latencies = []
 failures = 0
 
 payload= {
-  "code": "#include <iostream>\nusing namespace std;\n\nint main() {\n    int n;\n    cin >> n;\n    int sum = 0;\n    for (int i = 1; i <= n; i++) {\n        sum += i;\n    }\n    for (int i = 1; i <= n - 1; i++) {\n        int x;\n        cin >> x;\n        sum -= x;\n    }\n    cout << sum << \"\\n\";\n}"
+  "code": "#include <iostream>\n#include <vector>\nusing namespace std;\n\nint main() {\n    int n, m;\n    cin >> n >> m;\n\n    vector<string> grid(n);\n    for (int i = 0; i < n; i++) {\n        cin >> grid[i];\n    }\n\n    for (int y = 0; y < n; y++) {\n        for (int x = 0; x < m; x++) {\n            for (int c = 'A'; c <= 'D'; c++) {\n                bool fail = false;\n                if (grid[y][x] == c) fail = true;\n                if (y > 0 && grid[y - 1][x] == c) fail = true;\n                if (x > 0 && grid[y][x - 1] == c) fail = true;\n                if (!fail) {\n                    grid[y][x] = c;\n                    break;\n                }\n            }\n            cout << grid[y][x];\n        }\n        cout << \"\\n\";\n    }\n}\n",
+  "input":"3 4\nAAAA\nBBBB\nCCDD"
 }
 def extract_status(data):
     """
@@ -37,34 +38,26 @@ def client():
 
             # Submit job
             r = requests.post(
-                f"{BASE}/{QID}/submit",
+                f"{BASE}/{QID}/run",
                 json=payload,
-                timeout=3
+                timeout=100
             )
             if r.status_code != 200:
                 raise Exception("Submit failed")
 
-            sid = r.json()
-
-            # Poll result
-            while True:
-                res = requests.get(f"{BASE}/{sid}/result", timeout=3)
-                data = res.json()
-                status = extract_status(data)
-
-                # 0 = QUEUED, 1 = RUNNING
-                if status not in (0, 1):
-                    break
-                delay = random.uniform(1,1.5)
-                time.sleep(delay)  # avoid DB hammering
-
+            output = r.json()
+            print(output)
             latency = time.time() - start
             with lock:
                 latencies.append(latency)
 
         except Exception as e:
             with lock:
-                failures += 1
+               print("Exception:", type(e).__name__, e)
+               if 'r' in locals():
+                print("Status:", r.status_code)
+                print("Raw response:")
+                print(r.text)
 
 threads = []
 start_time = time.time()

@@ -22,7 +22,7 @@ public class ProcessController {
     @PostMapping("/{qid}/run")
     public ResponseEntity<?> run(@RequestBody Execution request){
         String output=processService.run(request);
-        return ResponseEntity.ok(output);
+        return ResponseEntity.ok(new ExecResponse(output));
     }
     @PostMapping("/{qid}/submit")
     public ResponseEntity<?> submit(@RequestBody Submission request , @PathVariable("qid") int qid){
