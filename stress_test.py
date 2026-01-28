@@ -15,8 +15,7 @@ latencies = []
 failures = 0
 
 payload= {
-  "code": "#include <iostream>\n#include <vector>\nusing namespace std;\n\nint main() {\n    int n, m;\n    cin >> n >> m;\n\n    vector<string> grid(n);\n    for (int i = 0; i < n; i++) {\n        cin >> grid[i];\n    }\n\n    for (int y = 0; y < n; y++) {\n        for (int x = 0; x < m; x++) {\n            for (int c = 'A'; c <= 'D'; c++) {\n                bool fail = false;\n                if (grid[y][x] == c) fail = true;\n                if (y > 0 && grid[y - 1][x] == c) fail = true;\n                if (x > 0 && grid[y][x - 1] == c) fail = true;\n                if (!fail) {\n                    grid[y][x] = c;\n                    break;\n                }\n            }\n            cout << grid[y][x];\n        }\n        cout << \"\\n\";\n    }\n}\n",
-  "input":"3 4\nAAAA\nBBBB\nCCDD"
+  "code": "#include <iostream>\n#include <vector>\nusing namespace std;\nvector<pair<int, int>> moves;\nvoid move(int n, int a, int b, int c) {\n    if (n == 1) {\n        moves.emplace_back(a, b);\n    } else {\n        move(n - 1, a, c, b);\n        move(1, a, b, c);\n        move(n - 1, c, b, a);\n    }\n}\nint main() {\n    int n;\n    cin >> n;\n    move(n, 1, 3, 2);\n    cout << moves.size() << \"\\n\";\n    for (auto [a, b] : moves) {\n        cout << a << \" \" << b << \"\\n\";\n    }\n}"
 }
 def extract_status(data):
     """
@@ -38,26 +37,33 @@ def client():
 
             # Submit job
             r = requests.post(
-                f"{BASE}/{QID}/run",
-                json=payload,
-                timeout=100
+                f"{BASE}/{QID}/submit",
+                json=payload
             )
             if r.status_code != 200:
                 raise Exception("Submit failed")
 
-            output = r.json()
-            print(output)
+            sid = r.json()
+            # Poll result
+            while True:
+                res = requests.get(f"{BASE}/{sid}/result", timeout=3)
+                res.raise_for_status()
+                status=res.text
+
+                # 0 = QUEUED, 1 = RUNNING
+                if status not in ("Queue","Running"):
+                    break
+                delay = random.uniform(1,1.5)
+                time.sleep(delay)  # avoid DB hammering
+
             latency = time.time() - start
             with lock:
                 latencies.append(latency)
 
         except Exception as e:
             with lock:
-               print("Exception:", type(e).__name__, e)
-               if 'r' in locals():
-                print("Status:", r.status_code)
-                print("Raw response:")
-                print(r.text)
+                print(type(e).__name__)
+                failures += 1
 
 threads = []
 start_time = time.time()

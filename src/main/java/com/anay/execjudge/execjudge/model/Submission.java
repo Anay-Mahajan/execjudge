@@ -16,7 +16,7 @@ public class Submission{
     private int id;
     private int qid;
     private int testCasePassed=0;
-    private int status=0;
+    private String status="Queue";
     @Column(columnDefinition="TEXT")
     private String code;
     public Submission(Submission s) {

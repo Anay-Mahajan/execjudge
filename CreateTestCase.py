@@ -2,7 +2,7 @@ import requests
 
 QID=1
 api=f"http://localhost:8080/api/task/addTestCase"
-for i in range(1,8):
+for i in range(1,17):
     file_input=f"tests/{i}.in"
     file_output=f"tests/{i}.out"
     input=""

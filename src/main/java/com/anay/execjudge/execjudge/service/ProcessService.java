@@ -26,13 +26,15 @@ public class ProcessService {
     ProcessRepo processrepo;
     @Autowired 
     TestCaseService testCaseService;
-    private final BlockingQueue<Submission> jobQueue = new LinkedBlockingQueue<>();
-    private final ExecutorService threadPool = Executors.newFixedThreadPool(4);
+    private final BlockingQueue<Submission> compileQueue = new LinkedBlockingQueue<>();
+    private final ExecutorService threadPoolCompilers = Executors.newFixedThreadPool(2);
+    private final BlockingQueue<Submission> runQueue = new LinkedBlockingQueue<>();
+    private final ExecutorService threadPoolRunner = Executors.newFixedThreadPool(2);
     public String run(Execution execution){
         try {
             Files.writeString(Path.of("cpp2/"+execution.getId()+".cpp"), execution.getCode());
         } catch (IOException e) {
-            e.printStackTrace();
+            return "System Error";
         }
         try {
             if (!compileCpp("cpp2/"+execution.getId()+".cpp","cpp2/"+execution.getId())) {
@@ -41,44 +43,53 @@ public class ProcessService {
             }
         } catch (IOException | InterruptedException e) {
             
-            e.printStackTrace();
+           return "System Error";
         }
         String output="";
         try {
             output=runCppProgram(execution.getInput(),"cpp2/./"+execution.getId());
         } catch (IOException | InterruptedException e) {
             
-            e.printStackTrace();
+           return "System Error";
         }
         return output;
     }
     public int submit(Submission submission){
-        long start = System.nanoTime();
         submission=processrepo.save(submission);
-        long end=System.nanoTime();
-        // System.out.println("Time to save process to database "+(end-start)/ 1_000_000);
         try {
-            start= System.nanoTime();
             Files.writeString(Path.of("cpp/"+submission.getId()+".cpp"), submission.getCode());
-            end=System.nanoTime();
-            // System.out.println("Time to create file "+(end-start)/ 1_000_000);
         } catch (IOException e) {
-            e.printStackTrace();
+           return -1;
         }
-        start= System.nanoTime();
-        jobQueue.offer(submission);
-        end=System.nanoTime();
-        System.out.println("Time to add the process to queue "+(end-start)/ 1_000_000);
+        compileQueue.offer(submission);
         return submission.getId();
     }
     @PostConstruct 
-    public void startConsumers() {
-        for (int i = 0; i < 4; i++) {
-            threadPool.submit(() -> {
+    public void startCompilers() {
+        for (int i = 0; i < 2; i++) {
+            threadPoolCompilers.submit(() -> {
                 while (true) {
                     try {
-                        Submission job = jobQueue.take();
+                        Submission job = compileQueue.take();
                         processJob(job);
+
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        System.out.println("Thread Exception Occured");
+                        break;
+                    }
+                }
+            });
+        }
+    }
+    @PostConstruct
+    public void startRunners(){
+        for (int i = 0; i < 2; i++) {
+            threadPoolRunner.submit(() -> {
+                while (true) {
+                    try {
+                        Submission job = runQueue.take();
+                        processRunning(job);
 
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
@@ -89,23 +100,28 @@ public class ProcessService {
         }
     }
     private void  processJob(Submission job){
-        job.setStatus(1);
+        job.setStatus("Running");
         try {
             if (!compileCpp("cpp/"+job.getId()+".cpp","cpp/"+job.getId())) {
-                job.setStatus(4);
+                job.setStatus("Compilation Error");
                 processrepo.save(job);
                 return;
             }
         } catch (IOException | InterruptedException e) {
+            System.out.println("Excetion has occured ");
             return;
         }
+        processrepo.save(job);
+        runQueue.offer(job);
+    }
+    private void processRunning(Submission job){
         List<TestCase> testCases=testCaseService.getTestCases(job.getQid());
         int testCasePassed=0;
         for(int i=0;i<testCases.size();i++){
             try {
                 String output=runCppProgram(testCases.get(i).getInput(), "cpp/./"+job.getId());
-                if(output!="__TLE__" || output!="__ERROR__"){
-                    if(output.equals(testCases.get(i).getExpectedOutput().trim())){
+                if(!output.equals("__TLE__") && !output.equals("__ERROR__")){
+                    if(output.equals(testCases.get(i).getExpectedOutput())){
                         testCasePassed++;
                     }
                     else{
@@ -113,27 +129,29 @@ public class ProcessService {
                     }
                 }
             } catch (IOException e) {
-                // TODO Auto-generated catch block
-                e.printStackTrace();
-                break;
+                System.out.println("IO Excetion ");
+                return;
             } catch (InterruptedException e) {
-                // TODO Auto-generated catch block
-                e.printStackTrace();
-                break;
+                System.out.println("Interupted Exception Occured ");
+                return;
             }
         }
         if(testCasePassed==testCases.size()){
-            job.setStatus(2);
+            job.setStatus("Accepted");
         }
         else{
-            job.setStatus(3);
+            job.setStatus("Wrong Answer");
         }
         job.setTestCasePassed(testCasePassed);
         processrepo.save(job);
     }
     @PreDestroy
-    public void shutdown() {
-        threadPool.shutdown();
+    public void shutdownCompile() {
+        threadPoolCompilers.shutdown();
+    }
+    @PreDestroy
+    public void shutdownRun() {
+        threadPoolRunner.shutdown();
     }
     private boolean compileCpp(String cppFilePath,String path) throws IOException, InterruptedException {
 
@@ -195,9 +213,9 @@ public class ProcessService {
         if (process.exitValue() != 0) {
             return "__ERROR__"; 
         }
-        return output.toString().trim();
+        return output.toString();
     }
-    public int result(int sid){
+    public String result(int sid){
         Submission S=processrepo.findById(sid).orElseThrow(()->new RuntimeException("Sid not found\n"));
         return S.getStatus();
     }
