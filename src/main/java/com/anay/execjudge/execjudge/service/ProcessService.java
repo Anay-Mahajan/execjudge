@@ -6,7 +6,6 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -16,7 +15,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import com.anay.execjudge.execjudge.model.Execution;
 import com.anay.execjudge.execjudge.model.Submission;
-import com.anay.execjudge.execjudge.model.TestCase;
 import com.anay.execjudge.execjudge.repo.ProcessRepo;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -115,34 +113,17 @@ public class ProcessService {
         runQueue.offer(job);
     }
     private void processRunning(Submission job){
-        List<TestCase> testCases=testCaseService.getTestCases(job.getQid());
         int testCasePassed=0;
-        for(int i=0;i<testCases.size();i++){
-            try {
-                String output=runCppProgram(testCases.get(i).getInput(), "cpp/./"+job.getId());
-                if(!output.equals("__TLE__") && !output.equals("__ERROR__")){
-                    if(output.equals(testCases.get(i).getExpectedOutput())){
-                        testCasePassed++;
-                    }
-                    else{
-                        break;
-                    }
-                }
-            } catch (IOException e) {
-                System.out.println("IO Excetion ");
-                return;
-            } catch (InterruptedException e) {
-                System.out.println("Interupted Exception Occured ");
-                return;
-            }
-        }
-        if(testCasePassed==testCases.size()){
-            job.setStatus("Accepted");
-        }
-        else{
-            job.setStatus("Wrong Answer");
+        try {
+            testCasePassed=runJudge(job.getId(),14 );
+        } catch (IOException e) {
+          System.out.println("System error");
+        } catch (InterruptedException e) {
+          System.out.println("System error");
         }
         job.setTestCasePassed(testCasePassed);
+        if(testCasePassed==1)   job.setStatus("Aceepted");
+        else    job.setStatus("Wrong Answer");
         processrepo.save(job);
     }
     @PreDestroy
@@ -214,6 +195,22 @@ public class ProcessService {
             return "__ERROR__"; 
         }
         return output.toString();
+    }
+    private  int runJudge(int sid,int no_of_testcase)  throws IOException, InterruptedException{
+        String path="./judge";
+         ProcessBuilder pb = new ProcessBuilder(
+            path,
+            String.valueOf(sid),
+            String.valueOf(no_of_testcase)
+         );
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+        try (BufferedReader reader = new BufferedReader(
+            new InputStreamReader(process.getInputStream()))) {
+        while (reader.readLine() != null) {}
+    }
+        int exitCode = process.waitFor();
+        return exitCode;
     }
     public String result(int sid){
         Submission S=processrepo.findById(sid).orElseThrow(()->new RuntimeException("Sid not found\n"));
