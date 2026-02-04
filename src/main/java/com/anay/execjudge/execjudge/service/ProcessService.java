@@ -6,15 +6,16 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import com.anay.execjudge.execjudge.model.Execution;
 import com.anay.execjudge.execjudge.model.Submission;
+import org.jctools.queues.MpmcArrayQueue;
 import com.anay.execjudge.execjudge.repo.ProcessRepo;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -22,12 +23,10 @@ import jakarta.annotation.PreDestroy;
 public class ProcessService {
     @Autowired
     ProcessRepo processrepo;
-    @Autowired 
-    TestCaseService testCaseService;
-    private final BlockingQueue<Submission> compileQueue = new LinkedBlockingQueue<>();
+    private final MpmcArrayQueue<Submission> compileQueue = new MpmcArrayQueue<Submission>(8192);
     private final ExecutorService threadPoolCompilers = Executors.newFixedThreadPool(2);
-    private final BlockingQueue<Submission> runQueue = new LinkedBlockingQueue<>();
-    private final ExecutorService threadPoolRunner = Executors.newFixedThreadPool(2);
+    private final MpmcArrayQueue<Submission> runQueue = new MpmcArrayQueue<Submission>(8192);
+    private final ExecutorService threadPoolRunner = Executors.newFixedThreadPool(4);
     public String run(Execution execution){
         try {
             Files.writeString(Path.of("cpp2/"+execution.getId()+".cpp"), execution.getCode());
@@ -54,12 +53,10 @@ public class ProcessService {
     }
     public int submit(Submission submission){
         submission=processrepo.save(submission);
-        try {
-            Files.writeString(Path.of("cpp/"+submission.getId()+".cpp"), submission.getCode());
-        } catch (IOException e) {
-           return -1;
+        submission.setRecv(System.currentTimeMillis());
+        while (!compileQueue.offer(submission)) {
+            Thread.onSpinWait();
         }
-        compileQueue.offer(submission);
         return submission.getId();
     }
     @PostConstruct 
@@ -67,37 +64,56 @@ public class ProcessService {
         for (int i = 0; i < 2; i++) {
             threadPoolCompilers.submit(() -> {
                 while (true) {
-                    try {
-                        Submission job = compileQueue.take();
-                        processJob(job);
-
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        System.out.println("Thread Exception Occured");
-                        break;
+                    Submission s;
+                    int idle = 0;
+                    while ((s = compileQueue.poll()) == null) {
+                        if (idle < 10) {
+                            Thread.onSpinWait();
+                        } else if (idle < 20) {
+                            Thread.yield();
+                        } else {
+                            LockSupport.parkNanos(1_000_000);
+                        }
+                        idle++;
                     }
+                    idle = 0;
+                    processJob(s);
                 }
             });
         }
     }
     @PostConstruct
     public void startRunners(){
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < 4; i++) {
             threadPoolRunner.submit(() -> {
                 while (true) {
-                    try {
-                        Submission job = runQueue.take();
-                        processRunning(job);
-
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
+                    Submission s;
+                    int idle = 0;
+                    while ((s = runQueue.poll()) == null) {
+                        if (idle < 50) {
+                            Thread.onSpinWait();
+                        } else if (idle < 100) {
+                            Thread.yield();
+                        } else {
+                            LockSupport.parkNanos(1_000);
+                        }
+                        idle++;
                     }
+                    idle = 0;
+                    processRunning(s);
                 }
             });
         }
     }
     private void  processJob(Submission job){
+        try {
+            Files.writeString(Path.of("cpp/"+job.getId()+".cpp"), job.getCode());
+        } catch (IOException e) {
+            job.setStatus("System Error");
+            processrepo.save(job);
+            return;
+        }
+        job.setCompileStart(System.currentTimeMillis());
         job.setStatus("Running");
         try {
             if (!compileCpp("cpp/"+job.getId()+".cpp","cpp/"+job.getId())) {
@@ -109,11 +125,18 @@ public class ProcessService {
             System.out.println("Excetion has occured ");
             return;
         }
+        job.setCompileEnd(System.currentTimeMillis());
         processrepo.save(job);
-        runQueue.offer(job);
+        if(runQueue.size()>2000){
+            LockSupport.parkNanos(1_000_000);
+        }
+        while(!runQueue.offer(job)){
+            Thread.onSpinWait();
+        }
     }
     private void processRunning(Submission job){
         int testCasePassed=0;
+         job.setRunStart(System.currentTimeMillis());
         try {
             testCasePassed=runJudge(job.getId(),14 );
         } catch (IOException e) {
@@ -124,6 +147,7 @@ public class ProcessService {
         job.setTestCasePassed(testCasePassed);
         if(testCasePassed==1)   job.setStatus("Aceepted");
         else    job.setStatus("Wrong Answer");
+        job.setRunEnd(System.currentTimeMillis());
         processrepo.save(job);
     }
     @PreDestroy
@@ -159,6 +183,7 @@ public class ProcessService {
         if (!finished) {
             process.destroyForcibly();
         }
+        process.destroyForcibly();
         return  true;
     }
     
@@ -205,11 +230,8 @@ public class ProcessService {
          );
         pb.redirectErrorStream(true);
         Process process = pb.start();
-        try (BufferedReader reader = new BufferedReader(
-            new InputStreamReader(process.getInputStream()))) {
-        while (reader.readLine() != null) {}
-    }
         int exitCode = process.waitFor();
+        process.destroyForcibly();
         return exitCode;
     }
     public String result(int sid){

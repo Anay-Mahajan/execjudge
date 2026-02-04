@@ -19,6 +19,11 @@ public class Submission{
     private String status="Queue";
     @Column(columnDefinition="TEXT")
     private String code;
+    private long recv;
+    private long compileStart;
+    private long compileEnd;
+    private long RunStart;
+    private long RunEnd;
     public Submission(Submission s) {
         this.id = s.id;
         this.qid = s.qid;

@@ -1,4 +1,7 @@
- {
+[ {
     "code": "#include<iostream>\nusing namespace std;\nint main(){\ncout<<100<<endl;\nreturn 0;\n}",
     "input": ""
+},{
+    "Queuery":"SELECT (S.COMPILE_START - S.RECV)        AS QUEUEING1,(S.COMPILE_END - S.COMPILE_START) AS COMPILATION,(S.RUN_START - S.COMPILE_END)     AS QUEUEING2,(S.RUN_END - S.RUN_START)         AS RUN_TIME FROM SUBMISSION S;"
 }
+]
