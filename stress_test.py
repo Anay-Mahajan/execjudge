@@ -15,7 +15,7 @@ latencies = []
 failures = 0
 
 payload= {
-  "code": "#include <iostream>\nusing namespace std;\nusing ll = long long;\n\nint main() {\n    ll n;\n    cin >> n;\n    while (true) {\n        cout << n << \" \";\n        if (n == 1) break;\n        if (n % 2 == 0) {\n            n = n / 2;\n        } else {\n            n = 3 * n + 1;\n        }\n    }\n    cout << \"\\n\";\n}"
+  "code": "#include <iostream>\n#include <vector>\nusing namespace std;\nvector<pair<int, int>> moves;\nvoid move(int n, int a, int b, int c) {\n    if (n == 1) {\n        moves.emplace_back(a, b);\n    } else {\n        move(n - 1, a, c, b);\n        move(1, a, b, c);\n        move(n - 1, c, b, a);\n    }\n}\nint main() {\n    int n;\n    cin >> n;\n    move(n, 1, 3, 2);\n    cout << moves.size() << \"\\n\";\n    for (auto [a, b] : moves) {\n        cout << a << \" \" << b << \"\\n\";\n    }\n}"
 }
 def extract_status(data):
     """
@@ -52,8 +52,9 @@ def client():
 
                 # 0 = QUEUED, 1 = RUNNING
                 if status not in ("Queue","Running"):
+                    print(status)
                     break
-                delay = random.uniform(1,1.5)
+                delay = random.uniform(0.2,0.5)
                 time.sleep(delay)  # avoid DB hammering
 
             latency = time.time() - start
