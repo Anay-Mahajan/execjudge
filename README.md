@@ -57,139 +57,79 @@
 
 ### High-Level Overview
 
-```mermaid
-graph TB
-    subgraph Client Layer
-        C["🌐 Client"]
-    end
-
-    subgraph API Layer
-        PC["ProcessController<br/>/api/process"]
-        TC["TaskController<br/>/api/task"]
-        LC["ListController<br/>/api/list"]
-    end
-
-    subgraph Service Layer
-        PS["ProcessService<br/>⭐ Pipeline Orchestrator"]
-        CS["CompilationService<br/>clang++ Wrapper"]
-        BSS["BatchSubmissionService<br/>Batched DB Writer"]
-        QS["QuestionService"]
-        TCS["TestCaseService"]
-    end
-
-    subgraph Concurrency Engine
-        CQ["compileQueue<br/>MPMC (8192)"]
-        RQ["runQueue<br/>MPMC (8192)"]
-        UQ["updateQueue<br/>BlockingQueue"]
-        CW["Compile Workers ×4"]
-        RW["Runner Workers ×8"]
-        BW["Batch Writers ×2"]
-    end
-
-    subgraph Native Layer
-        JP["Persistent judge Process<br/>(C++ · fork/exec)"]
-        UP["User Program<br/>(Isolated OS Process)"]
-    end
-
-    subgraph Data Layer
-        H2["H2 In-Memory Database"]
-        FS["File System<br/>tests/*.in · tests/*.out"]
-    end
-
-    C --> PC & TC & LC
-    PC --> PS
-    TC --> QS & TCS
-    LC --> QS
-
-    PS -->|enqueue| CQ
-    CQ -->|poll| CW
-    CW -->|compile| CS
-    CW -->|enqueue| RQ
-    RQ -->|poll| RW
-    RW -->|stdin/stdout IPC| JP
-    JP -->|fork + exec| UP
-    JP -->|read expected| FS
-
-    CW -->|status update| UQ
-    RW -->|final verdict| UQ
-    UQ -->|drain batch| BW
-    BW -->|saveAll| H2
-
-    PS -->|save/find| H2
-    QS --> H2
-    TCS --> H2
+```
+                            ┌────────────┐
+                            │   Client   │
+                            └─────┬──────┘
+                                  │
+                                  ▼
+                         ┌─────────────────┐
+                         │   REST API       │
+                         │  (Spring Boot)   │
+                         └────────┬────────┘
+                                  │
+                    ┌─────────────┴──────────────┐
+                    ▼                             ▼
+            ┌──────────────┐             ┌──────────────┐
+            │ Compile Queue│             │   Database   │
+            │ (MPMC 8192)  │             │  (H2 / JPA)  │
+            └──────┬───────┘             └──────────────┘
+                   │
+                   ▼
+          ┌─────────────────┐
+          │ Compile Workers  │──── clang++ -O2
+          │    (×4 threads)  │
+          └────────┬────────┘
+                   │
+                   ▼
+           ┌─────────────┐
+           │  Run Queue   │
+           │ (MPMC 8192)  │
+           └──────┬──────┘
+                  │
+                  ▼
+         ┌────────────────┐
+         │ Runner Workers  │──── stdin/stdout IPC
+         │  (×8 threads)   │
+         └────────┬───────┘
+                  │
+                  ▼
+       ┌─────────────────────┐
+       │ Persistent C++ Judge │
+       │   (fork + exec)      │
+       └──────────┬──────────┘
+                  │
+                  ▼
+        ┌──────────────────┐
+        │  User Program     │
+        │ (Isolated Process)│
+        └──────────────────┘
 ```
 
-### Execution Pipeline (Data Flow)
+### Execution Pipeline
 
 ```mermaid
 sequenceDiagram
-    participant C as 🌐 Client
+    participant C as Client
     participant API as REST API
-    participant DB as H2 Database
-    participant CQ as Compile Queue
     participant CW as Compile Worker
-    participant RQ as Run Queue
     participant RW as Runner Worker
     participant J as judge (C++)
-    participant P as User Program
 
-    Note over C,P: ① SUBMISSION
-    C->>API: POST /api/process/{qid}/submit
-    API->>DB: save(submission) → ID
-    API->>CQ: enqueue(submission)
-    API-->>C: 200 OK {submissionId}
+    C->>API: POST /submit {code}
+    API-->>C: submissionId
 
-    Note over C,P: ② COMPILATION
-    CQ-->>CW: poll()
-    CW->>CW: Write code → cpp/{id}.cpp
-    CW->>CW: clang++ -std=c++17 -O2 -pipe
-    alt Compilation Success
-        CW->>RQ: enqueue(job)
-    else Compilation Failure
-        CW->>DB: status = "Compilation Error"
-    end
+    API->>CW: enqueue job
+    CW->>CW: clang++ compile
+    CW->>RW: enqueue compiled job
 
-    Note over C,P: ③ EXECUTION & JUDGING
-    RQ-->>RW: poll()
-    RW->>J: write "{id} {numTests}\n" to stdin
-    loop For each test case
-        J->>J: Read tests/{i}.in
-        J->>P: fork() + exec("cpp/{id}")
-        J->>P: Pipe input via stdin
-        P-->>J: Output via stdout
-        J->>J: Compare output with tests/{i}.out
-    end
-    J-->>RW: "1" (pass) / "0" (fail) / "-1" (error)
-    RW->>DB: batch update → "Accepted" / "Wrong Answer"
+    RW->>J: send job via stdin
+    J->>J: fork+exec → run against test cases
+    J-->>RW: verdict (1 / 0 / -1)
+    RW->>RW: batch save to DB
 
-    Note over C,P: ④ RESULT POLLING
-    C->>API: GET /api/process/{sid}/result
-    API->>DB: findById(sid)
-    API-->>C: 200 OK "Accepted"
-```
-
-### Concurrency Model
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         THREAD ARCHITECTURE                         │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐  │
-│  │  Compile Pool    │    │  Runner Pool     │    │  Updater Pool   │  │
-│  │  (4 threads)     │    │  (8 threads)     │    │  (2 threads)    │  │
-│  └────────┬────────┘    └────────┬────────┘    └────────┬────────┘  │
-│           │                      │                      │            │
-│     ┌─────▼─────┐         ┌─────▼─────┐         ┌─────▼─────┐      │
-│     │  MPMC Q   │────────▶│  MPMC Q   │────────▶│ Blocking  │      │
-│     │  (8192)   │         │  (8192)   │         │   Queue   │      │
-│     │ Lock-Free │         │ Lock-Free │         │           │      │
-│     └───────────┘         └───────────┘         └───────────┘      │
-│                                                                      │
-│  Backpressure: LockSupport.parkNanos(1ms) on empty poll             │
-│  Batch size: up to 50 submissions per DB write                      │
-└──────────────────────────────────────────────────────────────────────┘
+    C->>API: GET /result/{id}
+    API-->>C: "Accepted" / "Wrong Answer"
 ```
 
 ---
@@ -536,11 +476,11 @@ Stress tested with **500 concurrent submissions** on a MacBook Air (Apple Silico
 
 #### Moderate Workload — 17.72 jobs/sec
 
-![Stress Test — Moderate Workload (500 jobs, 17.72 jobs/sec, 0 failures)](artifacts/Stress_Test_Result2.png)
+![Stress Test — Moderate Workload (500 jobs, 17.72 jobs/sec, 0 failures)](Stress_Test_Result2.png)
 
 #### CPU-Heavy Workload — 10.35 jobs/sec
 
-![Stress Test — CPU-Heavy Workload (500 jobs, 10.35 jobs/sec, 0 failures)](artifacts/Stress_Test_Result1.png)
+![Stress Test — CPU-Heavy Workload (500 jobs, 10.35 jobs/sec, 0 failures)](Stress_Test_Result1.png)
 
 ### Key Takeaways
 
