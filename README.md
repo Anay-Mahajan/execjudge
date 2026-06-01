@@ -476,11 +476,11 @@ Stress tested with **500 concurrent submissions** on a MacBook Air (Apple Silico
 
 #### Moderate Workload — 17.72 jobs/sec
 
-![Stress Test — Moderate Workload (500 jobs, 17.72 jobs/sec, 0 failures)](Stress_Test_Result2.png)
+![Stress Test — Moderate Workload (500 jobs, 17.72 jobs/sec, 0 failures)](artifacts/Stress_Test_Result2.png)
 
 #### CPU-Heavy Workload — 10.35 jobs/sec
 
-![Stress Test — CPU-Heavy Workload (500 jobs, 10.35 jobs/sec, 0 failures)](Stress_Test_Result1.png)
+![Stress Test — CPU-Heavy Workload (500 jobs, 10.35 jobs/sec, 0 failures)](artifacts/Stress_Test_Result1.png)
 
 ### Key Takeaways
 
